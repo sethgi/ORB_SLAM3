@@ -24,6 +24,7 @@
 #include <chrono>
 #include <ctime>
 #include <sstream>
+#include <sys/stat.h>
 
 #include <condition_variable>
 
@@ -44,6 +45,18 @@ void exit_loop_handler(int s){
     b_continue_session = false;
 
 }
+
+void dumpVectorToCSV(const std::vector<double>& vec, const std::string& filename) {
+    std::ofstream file(filename);
+    if (file.is_open()) {
+        file << "index,value\n";
+        for (size_t i = 0; i < vec.size(); ++i) {
+            file << i << "," << std::setprecision(20) << vec[i] << "\n";
+        }
+        file.close();
+    }
+}
+
 
 rs2_stream find_stream_to_align(const std::vector<rs2::stream_profile>& streams);
 bool profile_changed(const std::vector<rs2::stream_profile>& current, const std::vector<rs2::stream_profile>& prev);
@@ -100,9 +113,9 @@ static rs2_option get_sensor_option(const rs2::sensor& sensor)
 
 int main(int argc, char **argv) {
 
-    if (argc < 3 || argc > 4) {
+    if (argc < 4 || argc > 5) {
         cerr << endl
-             << "Usage: ./mono_inertial_realsense_D435i path_to_vocabulary path_to_settings (trajectory_file_name)"
+             << "Usage: ./mono_inertial_realsense_D435i path_to_vocabulary path_to_settings log_dir (trajectory_file_name)"
              << endl;
         return 1;
     }
@@ -110,10 +123,15 @@ int main(int argc, char **argv) {
     string file_name;
     bool bFileName = false;
 
-    if (argc == 4) {
+    if (argc == 5) {
         file_name = string(argv[argc - 1]);
         bFileName = true;
     }
+
+    string log_dir(argv[3]);
+    mkdir(log_dir.c_str(), S_IRWXU);
+    mkdir((log_dir + "/images").c_str(), S_IRWXU);
+    mkdir((log_dir + "/depth").c_str(), S_IRWXU);
 
     struct sigaction sigIntHandler;
 
@@ -145,7 +163,11 @@ int main(int argc, char **argv) {
             ++index;
             if (index == 1) {
                 sensor.set_option(RS2_OPTION_ENABLE_AUTO_EXPOSURE, 1);
-                sensor.set_option(RS2_OPTION_AUTO_EXPOSURE_LIMIT,50000);
+                try{
+                    sensor.set_option(RS2_OPTION_AUTO_EXPOSURE_LIMIT,50000);
+                } catch (rs2::invalid_value_error& ) {
+                    std::cerr << "This sensor doesn't support auto-exposure" << std::endl;
+                }
                 sensor.set_option(RS2_OPTION_EMITTER_ENABLED, 1); // emitter on for depth information
             }
             // std::cout << "  " << index << " : " << sensor.get_info(RS2_CAMERA_INFO_NAME) << std::endl;
@@ -315,7 +337,9 @@ int main(int argc, char **argv) {
     double t_resize = 0.f;
     double t_track = 0.f;
     rs2::frameset fs;
-
+    unsigned int image_id = 0; 
+    
+    std::vector<double> timestamps;
     while (!SLAM.isShutDown())
     {
         {
@@ -326,7 +350,7 @@ int main(int argc, char **argv) {
 #ifdef COMPILEDWITHC11
             std::chrono::steady_clock::time_point time_Start_Process = std::chrono::steady_clock::now();
 #else
-            std::chrono::monotonic_clock::time_point time_Start_Process = std::chrono::monotonic_clock::now();
+            std::chrono::steady_clock::time_point time_Start_Process = std::chrono::steady_clock::now();
 #endif
 
             fs = fsSLAM;
@@ -352,6 +376,18 @@ int main(int argc, char **argv) {
         im = cv::Mat(cv::Size(width_img, height_img), CV_8UC3, (void*)(color_frame.get_data()), cv::Mat::AUTO_STEP);
         depth = cv::Mat(cv::Size(width_img, height_img), CV_16U, (void*)(depth_frame.get_data()), cv::Mat::AUTO_STEP);
 
+        std::ostringstream oss;
+        oss << log_dir << "/images/" << std::setw(6) << std::setfill('0') << image_id << ".png";
+        std::string im_path = oss.str();
+
+        cv::imwrite(im_path, im);
+
+        std::ostringstream doss;
+        doss << log_dir << "/depth/" << std::setw(6) << std::setfill('0') << image_id << ".png";
+        std::string depth_path = doss.str();
+        timestamps.push_back(timestamp);
+        cv::imwrite(depth_path, depth);
+
         /*cv::Mat depthCV_8U;
         depthCV.convertTo(depthCV_8U,CV_8U,0.01);
         cv::imshow("depth image", depthCV_8U);*/
@@ -362,7 +398,7 @@ int main(int argc, char **argv) {
     #ifdef COMPILEDWITHC11
             std::chrono::steady_clock::time_point t_Start_Resize = std::chrono::steady_clock::now();
     #else
-            std::chrono::monotonic_clock::time_point t_Start_Resize = std::chrono::monotonic_clock::now();
+            std::chrono::steady_clock::time_point t_Start_Resize = std::chrono::steady_clock::now();
     #endif
 #endif
             int width = im.cols * imageScale;
@@ -374,7 +410,7 @@ int main(int argc, char **argv) {
     #ifdef COMPILEDWITHC11
             std::chrono::steady_clock::time_point t_End_Resize = std::chrono::steady_clock::now();
     #else
-            std::chrono::monotonic_clock::time_point t_End_Resize = std::chrono::monotonic_clock::now();
+            std::chrono::steady_clock::time_point t_End_Resize = std::chrono::steady_clock::now();
     #endif
             t_resize = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t_End_Resize - t_Start_Resize).count();
             SLAM.InsertResizeTime(t_resize);
@@ -385,22 +421,44 @@ int main(int argc, char **argv) {
     #ifdef COMPILEDWITHC11
         std::chrono::steady_clock::time_point t_Start_Track = std::chrono::steady_clock::now();
     #else
-        std::chrono::monotonic_clock::time_point t_Start_Track = std::chrono::monotonic_clock::now();
+        std::chrono::steady_clock::time_point t_Start_Track = std::chrono::steady_clock::now();
     #endif
 #endif
         // Pass the image to the SLAM system
         SLAM.TrackRGBD(im, depth, timestamp); //, vImuMeas); depthCV
+        image_id += 1;
 
 #ifdef REGISTER_TIMES
     #ifdef COMPILEDWITHC11
         std::chrono::steady_clock::time_point t_End_Track = std::chrono::steady_clock::now();
     #else
-        std::chrono::monotonic_clock::time_point t_End_Track = std::chrono::monotonic_clock::now();
+        std::chrono::steady_clock::time_point t_End_Track = std::chrono::steady_clock::now();
     #endif
         t_track = t_resize + std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t_End_Track - t_Start_Track).count();
         SLAM.InsertTrackTime(t_track);
 #endif
     }
+
+    const std::string traj_path = log_dir + "/trajectory.txt";
+    const std::string kf_traj_path = log_dir + "/kf_trajectory.txt";
+    SLAM.SaveTrajectoryTUM(traj_path);
+    SLAM.SaveKeyFrameTrajectoryTUM(kf_traj_path);
+    dumpVectorToCSV(timestamps, log_dir + "/frame_times.txt");
+
+    std::ofstream intrinsics_file(log_dir + "/intrinsics.yaml");
+    if(intrinsics_file.is_open()) {
+        intrinsics_file << "fx: " << intrinsics_cam.fx << std::endl;
+        intrinsics_file << "fy: " << intrinsics_cam.fy << std::endl;
+        intrinsics_file << "cx: " << intrinsics_cam.ppx << std::endl;
+        intrinsics_file << "cy: " << intrinsics_cam.ppy << std::endl;
+        intrinsics_file << "height: " << intrinsics_cam.height << std::endl;
+        intrinsics_file << "width: " << intrinsics_cam.width << std::endl;
+        intrinsics_file << "Coeff: [" << intrinsics_cam.coeffs[0] << ", " << intrinsics_cam.coeffs[1] << ", " <<
+            intrinsics_cam.coeffs[2] << ", " << intrinsics_cam.coeffs[3] << ", " << intrinsics_cam.coeffs[4] << "]" << std::endl;
+        intrinsics_file << "Model: " << intrinsics_cam.model << std::endl;
+    }
+
+
     cout << "System shutdown!\n";
 }
 

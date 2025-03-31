@@ -20,6 +20,7 @@
 #include<algorithm>
 #include<fstream>
 #include<chrono>
+#include <sys/stat.h>
 
 #include<opencv2/core/core.hpp>
 
@@ -30,13 +31,30 @@ using namespace std;
 void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageFilenamesRGB,
                 vector<string> &vstrImageFilenamesD, vector<double> &vTimestamps);
 
+void dumpVectorToCSV(const std::vector<double>& vec, const std::string& filename) {
+    std::ofstream file(filename);
+    if (file.is_open()) {
+        file << "index,value\n";
+        for (size_t i = 0; i < vec.size(); ++i) {
+            file << i << "," << std::setprecision(20) << vec[i] << "\n";
+        }
+        file.close();
+    }
+}
+
+
 int main(int argc, char **argv)
 {
-    if(argc != 5)
+    if(argc != 6)
     {
-        cerr << endl << "Usage: ./rgbd_tum path_to_vocabulary path_to_settings path_to_sequence path_to_association" << endl;
+        cerr << endl << "Usage: ./rgbd_tum path_to_vocabulary path_to_settings path_to_sequence path_to_association log_dir" << endl;
         return 1;
     }
+
+    string log_dir(argv[5]);
+    mkdir(log_dir.c_str(), S_IRWXU);
+    mkdir((log_dir + "/images").c_str(), S_IRWXU);
+    mkdir((log_dir + "/depth").c_str(), S_IRWXU);
 
     // Retrieve paths to images
     vector<string> vstrImageFilenamesRGB;
@@ -72,12 +90,15 @@ int main(int argc, char **argv)
 
     // Main loop
     cv::Mat imRGB, imD;
+    std::vector<double> timestamps;
+
     for(int ni=0; ni<nImages; ni++)
     {
         // Read image and depthmap from file
         imRGB = cv::imread(string(argv[3])+"/"+vstrImageFilenamesRGB[ni],cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
         imD = cv::imread(string(argv[3])+"/"+vstrImageFilenamesD[ni],cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
         double tframe = vTimestamps[ni];
+        timestamps.push_back(tframe);
 
         if(imRGB.empty())
         {
@@ -97,7 +118,7 @@ int main(int argc, char **argv)
 #ifdef COMPILEDWITHC11
         std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 #else
-        std::chrono::monotonic_clock::time_point t1 = std::chrono::monotonic_clock::now();
+        std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 #endif
 
         // Pass the image to the SLAM system
@@ -106,7 +127,7 @@ int main(int argc, char **argv)
 #ifdef COMPILEDWITHC11
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
 #else
-        std::chrono::monotonic_clock::time_point t2 = std::chrono::monotonic_clock::now();
+        std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
 #endif
 
         double ttrack= std::chrono::duration_cast<std::chrono::duration<double> >(t2 - t1).count();
@@ -124,6 +145,7 @@ int main(int argc, char **argv)
             usleep((T-ttrack)*1e6);
     }
 
+    // SLAM.RunShutdownGlobalBA();
     // Stop all threads
     SLAM.Shutdown();
 
@@ -139,8 +161,11 @@ int main(int argc, char **argv)
     cout << "mean tracking time: " << totaltime/nImages << endl;
 
     // Save camera trajectory
-    SLAM.SaveTrajectoryTUM("CameraTrajectory.txt");
-    SLAM.SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");   
+    const std::string traj_path = log_dir + "/trajectory.txt";
+    const std::string kf_traj_path = log_dir + "/kf_trajectory.txt";
+    SLAM.SaveTrajectoryTUM(traj_path);
+    SLAM.SaveKeyFrameTrajectoryTUM(kf_traj_path);
+    dumpVectorToCSV(timestamps, log_dir + "/frame_times.txt");
 
     return 0;
 }
@@ -149,7 +174,9 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
                 vector<string> &vstrImageFilenamesD, vector<double> &vTimestamps)
 {
     ifstream fAssociation;
+    std::cout << "Associations"
     fAssociation.open(strAssociationFilename.c_str());
+    int i = 0;
     while(!fAssociation.eof())
     {
         string s;
@@ -168,6 +195,9 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
             ss >> sD;
             vstrImageFilenamesD.push_back(sD);
 
+        }
+        if(i++ % 100 == 0) {
+            cout << "Processed image " << i << endl;
         }
     }
 }

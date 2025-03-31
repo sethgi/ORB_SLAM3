@@ -19,6 +19,7 @@
 
 
 #include "System.h"
+#include "Optimizer.h"
 #include "Converter.h"
 #include <thread>
 #include <pangolin/pangolin.h>
@@ -510,6 +511,15 @@ void System::ResetActiveMap()
 {
     unique_lock<mutex> lock(mMutexReset);
     mbResetActiveMap = true;
+}
+
+void System::RunShutdownGlobalBA()
+{
+    KeyFrame* pCurrentKF = mpLocalMapper->GetCurrKF();
+    Map* pCurrentMap = pCurrentKF->GetMap();
+    cout << "Running global bundle adjustment before shutting down." << endl;
+    Optimizer::GlobalBundleAdjustemnt(pCurrentMap, 25);
+    cout << "Done with global BA" << endl;
 }
 
 void System::Shutdown()
